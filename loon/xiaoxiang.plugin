@@ -1,0 +1,23 @@
+[Rule]
+# 兜底TCP请求下发广告
+IP-CIDR, 101.50.8.64/32, REJECT, no-resolve
+IP-CIDR, 101.50.8.75/32, REJECT, no-resolve
+IP-CIDR, 103.37.152.161/32, REJECT, no-resolve
+IP-CIDR, 103.37.152.162/32, REJECT, no-resolve
+IP-CIDR, 103.63.160.64/32, REJECT, no-resolve
+IP-CIDR, 119.29.48.215/32, REJECT, no-resolve
+IP-CIDR, 119.29.48.215/32, REJECT, no-resolve
+IP-CIDR, 202.90.110.8/32, REJECT, no-resolve
+IP-CIDR, 203.76.217.241/32, REJECT, no-resolve
+IP-CIDR, 203.76.217.243/32, REJECT, no-resolve
+IP-CIDR, 203.76.217.37/32, REJECT, no-resolve
+IP-CIDR6, 2405:1480:3000:303f::303f/128, REJECT, no-resolve
+
+[Rewrite]
+# 开屏广告
+^https:\/\/mall\.meituan\.com\/api\/c\/homepage\/splash reject-dict
+# 首页领券悬浮红包
+^https:\/\/mall\.meituan\.com\/api\/c\/homepage\/bubble\/operate\/info reject-dict
+
+[Mitm]
+hostname = mall.meituan.com
