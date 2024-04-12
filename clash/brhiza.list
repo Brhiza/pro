@@ -2,3 +2,4 @@ DOMAIN-SUFFIX,lala.su
 DOMAIN-SUFFIX,ikun.jp
 DOMAIN-SUFFIX,liyu.su
 DOMAIN-SUFFIX,91porn.su
+IP-CIDR,148.135.70.0/24,no-resolve
