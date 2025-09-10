@@ -97,35 +97,28 @@ load() {
     . $is_sh_dir/src/$1
 }
 
-# wget add --no-check-certificate
+# wget with proxy and CDN acceleration
 _wget() {
-    [[ $proxy ]] && export https_proxy=$proxy
-    # 在此处添加 CDN 变量，确保 wget 使用加速链接
-    local url_with_cdn="$1"
-    if [[ $1 =~ ^https://github.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.*)$ ]]; then
-        local user_repo="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
-        local version="${BASH_REMATCH[3]}"
-        local filename="${BASH_REMATCH[4]}"
-        url_with_cdn="https://cdn.jsdelivr.net/gh/${user_repo}@${version//v/}/releases/download/${version}/${filename}"
-        # 注意：jsdelivr gh 形式有时候会去掉 tag_name 前缀的 'v'
-        # 实际测试发现直接用 `gh/${user_repo}@${version}/${filename}` 往往更通用
-        # 但对于 releases/download 路径，jsdelivr 更倾向于直接代理文件
-        # 我们这里尝试使用更直接的代理方式，如果失败可以尝试：
-        # url_with_cdn="https://cdn.jsdelivr.net/gh/${user_repo}@${version}/${filename}"
-        # 或者更稳妥的是直接替换 github.com 为 github.com.cnpmjs.org 或 ghproxy.com 等
-        # 考虑到 Jsdelivr 对 releases/download 的支持可能不完美，更推荐 ghproxy.com
-        # for sing-box releases, it's: https://ghproxy.com/https://github.com/${is_core_repo}/releases/download/${is_core_ver}/${is_core}-${is_core_ver:1}-linux-${is_arch}.tar.gz
-        # for script code: https://ghproxy.com/https://github.com/${is_sh_repo}/releases/latest/download/code.tar.gz
-        # for jq: https://ghproxy.com/https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-$is_arch
-        # 这里为了演示 jsdelivr，我们先尝试它。如果依旧慢，可以替换成 ghproxy.com
+    local original_url="$1"
+    local accelerated_url="$original_url"
 
-        # 这里使用 ghproxy.com 进行加速，因为它对 GitHub Releases 的兼容性更好，且通常速度不错
-        if [[ $1 =~ ^https://github.com/(.*)$ ]]; then
-            url_with_cdn="https://ghproxy.com/$1"
-        fi
+    # 如果设置了代理，则导出
+    [[ $proxy ]] && export https_proxy=$proxy http_proxy=$proxy
+
+    # 尝试使用 ghproxy.com 加速 GitHub Releases 或其他 GitHub 内容
+    if [[ "$original_url" =~ ^https://github.com/ ]]; then
+        accelerated_url="https://ghproxy.com/$original_url"
+        msg debug "尝试使用 ghproxy.com 加速: $accelerated_url"
+    elif [[ "$original_url" =~ ^https://api.github.com/ ]]; then
+        # 如果是 GitHub API 链接，通常不需要加速，或者可能需要不同的代理方式
+        # 如果这里也卡，可能需要手动设置系统代理，或者在 `-p` 参数中提供一个能代理 api.github.com 的代理
+        msg debug "GitHub API 链接，不进行 ghproxy.com 加速: $original_url"
     fi
-    wget --no-check-certificate "$url_with_cdn" "${@:2}" # 传递除第一个参数外的所有参数
+
+    # 执行 wget 命令，并传递剩余的参数
+    wget --no-check-certificate "$accelerated_url" "${@:2}"
 }
+
 
 # print a mesage
 msg() {
@@ -138,6 +131,9 @@ msg() {
         ;;
     ok)
         local color=$green
+        ;;
+    debug) # Add a debug message type
+        local color=$gray
         ;;
     esac
 
@@ -183,22 +179,29 @@ install_pkg() {
 download() {
     case $1 in
     core)
+        # 先尝试获取最新版本号，这个API调用通常很快
         [[ ! $is_core_ver ]] && is_core_ver=$(_wget -qO- "https://api.github.com/repos/${is_core_repo}/releases/latest?v=$RANDOM" | grep tag_name | grep -E -o 'v([0-9.]+)')
-        # 注意：这里调用 _wget 传递 full URL
-        [[ $is_core_ver ]] && link="https://github.com/${is_core_repo}/releases/download/${is_core_ver}/${is_core}-${is_core_ver:1}-linux-${is_arch}.tar.gz"
+        
+        [[ -z "$is_core_ver" ]] && {
+            msg err "无法获取 ${is_core_name} 最新版本号，请检查网络或稍后再试。"
+            exit_and_del_tmpdir
+        }
+        
+        # 构建 sing-box 的 Releases 下载链接
+        link="https://github.com/${is_core_repo}/releases/download/${is_core_ver}/${is_core}-${is_core_ver:1}-linux-${is_arch}.tar.gz"
         name=$is_core_name
         tmpfile=$tmpcore
         is_ok=$is_core_ok
         ;;
     sh)
-        # 脚本的下载也使用 ghproxy.com 加速
+        # 构建脚本的 Releases 下载链接
         link=https://github.com/${is_sh_repo}/releases/latest/download/code.tar.gz
         name="$is_core_name 脚本"
         tmpfile=$tmpsh
         is_ok=$is_sh_ok
         ;;
     jq)
-        # jq 的下载也使用 ghproxy.com 加速
+        # 构建 jq 的 Releases 下载链接
         link=https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-$is_arch
         name="jq"
         tmpfile=$tmpjq
@@ -206,11 +209,17 @@ download() {
         ;;
     esac
 
-    # 这里不再直接拼接 ghproxy.com，而是让 _wget 函数处理
     [[ $link ]] && {
         msg warn "下载 ${name} > ${link}"
-        if _wget -t 3 -q -c "$link" -O $tmpfile; then # 传递完整的原始链接给 _wget
+        if _wget -t 3 -q -c "$link" -O $tmpfile; then
             mv -f $tmpfile $is_ok
+            msg ok "下载 ${name} 成功！"
+        else
+            msg err "下载 ${name} 失败！请检查上述链接是否可访问，或尝试手动下载。"
+            # 可选：如果下载失败，可以在这里清理临时文件或退出
+            # rm -f $tmpfile 
+            # exit 1 
+            is_fail=1 # 标记失败，让 check_status 处理
         fi
     }
 }
@@ -218,6 +227,7 @@ download() {
 
 # get server ip
 get_ip() {
+    # 这里的 IP 获取通常也速度很快，且不属于 GitHub Releases
     export "$(_wget -4 -qO- https://one.one.one.one/cdn-cgi/trace | grep ip=)" &>/dev/null
     [[ -z $ip ]] && export "$(_wget -6 -qO- https://one.one.one.one/cdn-cgi/trace | grep ip=)" &>/dev/null
 }
@@ -232,29 +242,19 @@ check_status() {
     }
 
     # download file status
-    if [[ $is_wget ]]; then
-        [[ ! -f $is_core_ok ]] && {
-            msg err "下载 ${is_core_name} 失败"
-            is_fail=1
-        }
-        [[ ! -f $is_sh_ok ]] && {
-            msg err "下载 ${is_core_name} 脚本失败"
-            is_fail=1
-        }
-        [[ ! -f $is_jq_ok ]] && {
-            msg err "下载 jq 失败"
-            is_fail=1
-        }
-    else
-        [[ ! $is_fail ]] && {
-            is_wget=1
-            [[ ! $is_core_file ]] && download core &
-            [[ ! $local_install ]] && download sh &
-            [[ $jq_not_found ]] && download jq &
-            get_ip
-            wait
-            check_status
-        }
+    # 这里的逻辑有点嵌套，我们在 download 函数里已经设置 is_fail
+    # 所以这里只需要检查 $is_core_ok 等文件是否存在
+    if [[ ! -f $is_core_ok ]] && [[ ! $is_core_file ]]; then # 如果不是文件安装，且文件不存在
+        msg err "下载 ${is_core_name} 失败"
+        is_fail=1
+    fi
+    if [[ ! -f $is_sh_ok ]] && [[ ! $local_install ]]; then # 如果不是本地安装，且文件不存在
+        msg err "下载 ${is_core_name} 脚本失败"
+        is_fail=1
+    fi
+    if [[ ! -f $is_jq_ok ]] && [[ $jq_not_found ]]; then # 如果需要 jq 且文件不存在
+        msg err "下载 jq 失败"
+        is_fail=1
     fi
 
     # found fail status, remove tmp dir and exit.
@@ -349,7 +349,7 @@ main() {
     mkdir -p $tmpdir
     # if is_core_file, copy file
     [[ $is_core_file ]] && {
-        cp -f $is_core_file $is_core_ok
+        cp -f "$is_core_file" "$is_core_ok"
         msg warn "${yellow}${is_core_name} 文件使用 > $is_core_file${none}"
     }
     # local dir install sh script
@@ -389,7 +389,7 @@ main() {
     # test $is_core_file
     if [[ $is_core_file ]]; then
         mkdir -p $tmpdir/testzip
-        tar zxf $is_core_ok --strip-components 1 -C $tmpdir/testzip &>/dev/null
+        tar zxf "$is_core_ok" --strip-components 1 -C $tmpdir/testzip &>/dev/null
         [[ $? != 0 ]] && {
             msg err "${is_core_name} 文件无法通过测试."
             exit_and_del_tmpdir
@@ -407,22 +407,22 @@ main() {
     }
 
     # create sh dir...
-    mkdir -p $is_sh_dir
+    mkdir -p "$is_sh_dir"
 
     # copy sh file or unzip sh zip file.
     if [[ $local_install ]]; then
-        cp -rf $PWD/* $is_sh_dir
+        cp -rf $PWD/* "$is_sh_dir"
     else
-        tar zxf $is_sh_ok -C $is_sh_dir
+        tar zxf "$is_sh_ok" -C "$is_sh_dir"
     fi
 
     # create core bin dir
-    mkdir -p $is_core_dir/bin
+    mkdir -p "$is_core_dir/bin"
     # copy core file or unzip core zip file
     if [[ $is_core_file ]]; then
-        cp -rf $tmpdir/testzip/* $is_core_dir/bin
+        cp -rf $tmpdir/testzip/* "$is_core_dir/bin"
     else
-        tar zxf $is_core_ok --strip-components 1 -C $is_core_dir/bin
+        tar zxf "$is_core_ok" --strip-components 1 -C "$is_core_dir/bin"
     fi
 
     # add alias
@@ -430,17 +430,17 @@ main() {
     echo "alias $is_core=$is_sh_bin" >>/root/.bashrc
 
     # core command
-    ln -sf $is_sh_dir/$is_core.sh $is_sh_bin
-    ln -sf $is_sh_dir/$is_core.sh ${is_sh_bin/$is_core/sb}
+    ln -sf "$is_sh_dir/$is_core.sh" "$is_sh_bin"
+    ln -sf "$is_sh_dir/$is_core.sh" "${is_sh_bin/$is_core/sb}"
 
     # jq
-    [[ $jq_not_found ]] && mv -f $is_jq_ok /usr/bin/jq
+    [[ $jq_not_found ]] && mv -f "$is_jq_ok" /usr/bin/jq
 
     # chmod
-    chmod +x $is_core_bin $is_sh_bin /usr/bin/jq ${is_sh_bin/$is_core/sb}
+    chmod +x "$is_core_bin" "$is_sh_bin" /usr/bin/jq "${is_sh_bin/$is_core/sb}"
 
     # create log dir
-    mkdir -p $is_log_dir
+    mkdir -p "$is_log_dir"
 
     # show a tips msg
     msg ok "生成配置文件..."
@@ -451,7 +451,7 @@ main() {
     install_service $is_core &>/dev/null
 
     # create condf dir
-    mkdir -p $is_conf_dir
+    mkdir -p "$is_conf_dir"
 
     load core.sh
     # create a reality config
